@@ -28,7 +28,15 @@
 ## Project setup
 
 ```bash
+# After Clone The Project
 $ npm install
+
+# Copy .env.example and setup
+$ cp .env.example .env
+
+# After setup .env, run the migrations
+$ npm run migration:execute
+
 ```
 
 ## Compile and run the project
@@ -45,6 +53,7 @@ $ npm run start:prod
 ```
 
 ## Run tests
+This app have a unit test and E2E Test, make sure to run this command below and see all test PASS, and dont forget to setup DB enviroment for test in .env config
 
 ```bash
 # unit tests
@@ -52,9 +61,6 @@ $ npm run test
 
 # e2e tests
 $ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
 ```
 
 ## Deployment
