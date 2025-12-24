@@ -24,6 +24,7 @@
 ## Description
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+Open API Swagger endpoint: localhost:{port}/api
 
 ## Project setup
 
