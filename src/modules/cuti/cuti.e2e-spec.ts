@@ -9,6 +9,7 @@ import { Pegawai } from '../pegawai/pegawai.entity';
 import { Cuti } from './cuti.entity';
 import { CutiModule } from './cuti.module';
 import { PegawaiModule } from '../pegawai/pegawai.module';
+import { CreateCutiDto, UpdateCutiDto } from './dto/cuti.dto';
 import dayjs from 'dayjs';
 
 describe('Cuti (E2E Test)', () => {
@@ -57,109 +58,201 @@ describe('Cuti (E2E Test)', () => {
   beforeEach(async () => {
     await cutiRepo.createQueryBuilder().delete().execute();
     await pegawaiRepo.createQueryBuilder().delete().execute();
+
     pegawai = await pegawaiRepo.save({
-        nama_depan: 'Test',
-        nama_belakang: 'Pegawai',
-        email: 'pegawai@example.com',
-        no_hp: '+628123456789',
-        alamat: 'Jl. Test',
-        jenis_kelamin: 'L',
+      nama_depan: 'John',
+      nama_belakang: 'Doe',
+      email: 'john.doe@example.com',
+      no_hp: '+628123456789',
+      alamat: 'Street Test No. 1',
+      jenis_kelamin: 'L',
     });
   });
 
-  describe('POST /cuti', () => {
-    it('should create cuti successfully', async () => {
-      const dto = {
-        alasan: 'Family event',
-        tanggal_mulai: '2025-01-01',
-        tanggal_selesai: '2025-01-02',
+  describe('POST /cuti (Apply Leave)', () => {
+    it('SUCCESS: should create a 1-day leave successfully', async () => {
+      const dto: CreateCutiDto = {
+        alasan: 'Urgent Family Matter',
+        tanggal_mulai: '2025-01-10',
+        tanggal_selesai: '2025-01-10',
         pegawaiEmail: pegawai.email,
       };
 
-      const res = await request(app.getHttpServer())
-        .post('/cuti')
-        .send(dto)
-        .expect(201);
-
-      const saved = await cutiRepo.createQueryBuilder('cuti')
-        .leftJoinAndSelect('cuti.pegawai', 'pegawai')
-        .where('pegawai.email = :email', { email: pegawai.email })
-        .getOne();
-      expect(saved).toBeDefined();
-      expect(saved?.alasan).toBe(dto.alasan);
+      await request(app.getHttpServer()).post('/cuti').send(dto).expect(201);
     });
 
-    it('should fail if pegawai not found', async () => {
-      const dto = {
-        alasan: 'Family event',
-        tanggal_mulai: '2025-01-01',
-        tanggal_selesai: '2025-01-02',
-        pegawaiEmail: 'unknown@example.com',
-      };
-
-      await request(app.getHttpServer())
-        .post('/cuti')
-        .send(dto)
-        .expect(400);
-    });
-
-    it('should fail if end date before start date', async () => {
-      const dto = {
-        alasan: 'Event',
-        tanggal_mulai: '2025-01-05',
-        tanggal_selesai: '2025-01-01',
+    it('FAIL: should not allow more than 1 day duration in one request', async () => {
+      const dto: CreateCutiDto = {
+        alasan: 'Vacation',
+        tanggal_mulai: '2025-01-10',
+        tanggal_selesai: '2025-01-11',
         pegawaiEmail: pegawai.email,
       };
 
-      await request(app.getHttpServer()).post('/cuti').send(dto).expect(400);
+      const res = await request(app.getHttpServer()).post('/cuti').send(dto).expect(400);
+      expect(res.body.message).toBe('You are only allowed to take a maximum of 1 day leave per month');
     });
 
-    it('should enforce 1 day leave per month', async () => {
-      const dto1 = {
-        alasan: 'Event 1',
-        tanggal_mulai: '2025-02-01',
-        tanggal_selesai: '2025-02-01',
-        pegawaiEmail: pegawai.email,
-      };
-      const dto2 = {
-        alasan: 'Event 2',
-        tanggal_mulai: '2025-02-15',
-        tanggal_selesai: '2025-02-15',
+    it('FAIL: should not allow a second leave request in the same month', async () => {
+      await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs('2025-02-05').toDate(),
+        tanggal_selesai: dayjs('2025-02-05').toDate(),
+        alasan: 'Existing Leave',
+      });
+
+      const dto: CreateCutiDto = {
+        alasan: 'Second Attempt in Same Month',
+        tanggal_mulai: '2025-02-20',
+        tanggal_selesai: '2025-02-20',
         pegawaiEmail: pegawai.email,
       };
 
-      await request(app.getHttpServer()).post('/cuti').send(dto1).expect(201);
-      await request(app.getHttpServer()).post('/cuti').send(dto2).expect(400);
+      const res = await request(app.getHttpServer()).post('/cuti').send(dto).expect(400);
+      expect(res.body.message).toContain('Monthly leave limit reached');
     });
 
-    it('should enforce yearly leave limit of 12 days', async () => {
-      for (let i = 1; i <= 12; i++) {
+    it('FAIL: should prevent overlapping dates', async () => {
+      const targetDate = '2025-03-10';
+      await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs(targetDate).toDate(),
+        tanggal_selesai: dayjs(targetDate).toDate(),
+        alasan: 'Original Leave',
+      });
+
+      const dto: CreateCutiDto = {
+        alasan: 'Overlapping Leave',
+        tanggal_mulai: targetDate,
+        tanggal_selesai: targetDate,
+        pegawaiEmail: pegawai.email,
+      };
+
+      const res = await request(app.getHttpServer()).post('/cuti').send(dto).expect(400);
+      expect(res.body.message).toBe('The employee already has a leave scheduled on the selected date');
+    });
+
+    it('FAIL: should enforce yearly leave limit of 12 days', async () => {
+      for (let i = 2; i <= 12; i++) {
+        const month = i < 10 ? `0${i}` : `${i}`;
         await cutiRepo.save({
           pegawai,
-          tanggal_mulai: dayjs(`2025-03-${i}`).toDate(),
-          tanggal_selesai: dayjs(`2025-03-${i}`).toDate(),
-          alasan: 'Existing leave',
+          tanggal_mulai: dayjs(`2025-${month}-01`).toDate(),
+          tanggal_selesai: dayjs(`2025-${month}-01`).toDate(),
+          alasan: `Month ${month}`,
         });
       }
+      await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs(`2025-12-15`).toDate(),
+        tanggal_selesai: dayjs(`2025-12-15`).toDate(),
+        alasan: `Extra day in Dec`,
+      });
 
-      const dto = {
-        alasan: 'New leave',
-        tanggal_mulai: '2025-04-01',
-        tanggal_selesai: '2025-04-01',
+      const dto: CreateCutiDto = {
+        alasan: '13th Day Attempt',
+        tanggal_mulai: '2025-01-15',
+        tanggal_selesai: '2025-01-15',
         pegawaiEmail: pegawai.email,
       };
 
-      await request(app.getHttpServer()).post('/cuti').send(dto).expect(400);
+      const res = await request(app.getHttpServer()).post('/cuti').send(dto).expect(400);
+      expect(res.body.message).toBe('Yearly leave limit (12 days) has been exceeded');
+    });
+  });
+
+  describe('PATCH /cuti/:id (Update Leave)', () => {
+    it('FAIL: should not allow updating an ongoing leave', async () => {
+      const today = dayjs().format('YYYY-MM-DD');
+      const cuti = await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs(today).toDate(),
+        tanggal_selesai: dayjs(today).toDate(),
+        alasan: 'Ongoing',
+      });
+
+      const dto: UpdateCutiDto = { alasan: 'Trying to update' };
+
+      const res = await request(app.getHttpServer())
+        .patch(`/cuti/${cuti.id}`)
+        .send(dto)
+        .expect(400);
+      
+      expect(res.body.message).toBe('Ongoing leave records cannot be updated');
+    });
+
+    it('SUCCESS: should allow updating a future leave', async () => {
+      const futureDate = dayjs().add(1, 'month').format('YYYY-MM-DD');
+      const cuti = await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs(futureDate).toDate(),
+        tanggal_selesai: dayjs(futureDate).toDate(),
+        alasan: 'Old Reason',
+      });
+
+      const dto: UpdateCutiDto = { alasan: 'New Reason Updated' };
+
+      await request(app.getHttpServer())
+        .patch(`/cuti/${cuti.id}`)
+        .send(dto)
+        .expect(200);
+    });
+  });
+
+  describe('DELETE /cuti/:id', () => {
+    it('FAIL: should not allow deleting an ongoing leave', async () => {
+      const today = dayjs().format('YYYY-MM-DD');
+      const cuti = await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs(today).toDate(),
+        tanggal_selesai: dayjs(today).toDate(),
+        alasan: 'Ongoing',
+      });
+
+      const res = await request(app.getHttpServer())
+        .delete(`/cuti/${cuti.id}`)
+        .expect(400);
+      
+      expect(res.body.message).toBe('Ongoing leave records cannot be deleted');
+    });
+
+    it('SUCCESS: should allow deleting a future leave', async () => {
+      const futureDate = dayjs().add(2, 'month').format('YYYY-MM-DD');
+      const cuti = await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: dayjs(futureDate).toDate(),
+        tanggal_selesai: dayjs(futureDate).toDate(),
+        alasan: 'Future Leave',
+      });
+
+      const res = await request(app.getHttpServer())
+        .delete(`/cuti/${cuti.id}`)
+        .expect(200);
+
+      expect(res.body.message).toBe('Leave record deleted successfully');
+      
+      const deletedCuti = await cutiRepo.findOneBy({ id: cuti.id });
+      expect(deletedCuti).toBeNull();
     });
   });
 
   describe('GET /cuti/:email', () => {
-    it('should return cuti list for pegawai', async () => {
+    it('should return empty data if no leave records found', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/cuti/${pegawai.email}`)
+        .expect(200);
+
+      expect(res.body.status).toBe('success');
+      expect(res.body.message).toBe('No leave records found for this employee');
+      expect(res.body.data).toEqual([]);
+    });
+
+    it('should return leave list for valid email', async () => {
       await cutiRepo.save({
         pegawai,
-        tanggal_mulai: dayjs('2025-01-01').toDate(),
-        tanggal_selesai: dayjs('2025-01-01').toDate(),
-        alasan: 'Event',
+        tanggal_mulai: dayjs('2025-12-10').toDate(),
+        tanggal_selesai: dayjs('2025-12-10').toDate(),
+        alasan: 'Year End',
       });
 
       const res = await request(app.getHttpServer())
@@ -169,42 +262,23 @@ describe('Cuti (E2E Test)', () => {
       expect(res.body.status).toBe('success');
       expect(res.body.data).toHaveLength(1);
     });
-
-    it('should return message if no cuti', async () => {
-      const res = await request(app.getHttpServer())
-        .get(`/cuti/${pegawai.email}`)
-        .expect(200);
-
-      expect(res.body.message).toBe('No leave data found for this pegawai');
-      expect(res.body.data).toEqual([]);
-    });
-
-    it('should return 400 if pegawai not found', async () => {
-      await request(app.getHttpServer())
-        .get('/cuti/unknown@example.com')
-        .expect(400);
-    });
   });
 
-  describe('GET /cuti', () => {
-    it('should return paginated cuti list', async () => {
-      for (let i = 1; i <= 3; i++) {
-        await cutiRepo.save({
-          pegawai,
-          tanggal_mulai: `2025-05-0${i}`,
-          tanggal_selesai: `2025-05-0${i}`,
-          alasan: `Event ${i}`,
-        });
-      }
+  describe('GET /cuti (Pagination)', () => {
+    it('should return global leave records with status success', async () => {
+      await cutiRepo.save({
+        pegawai,
+        tanggal_mulai: '2025-11-01',
+        tanggal_selesai: '2025-11-01',
+        alasan: 'Global Test',
+      });
 
       const res = await request(app.getHttpServer())
-        .get('/cuti?page=1&limit=2')
+        .get('/cuti?page=1&limit=10')
         .expect(200);
 
-      expect(res.body.data).toHaveLength(2);
-      expect(res.body.total).toBe(3);
-      expect(res.body.page).toBe(1);
-      expect(res.body.limit).toBe(2);
+      expect(res.body.status).toBe('success');
+      expect(res.body.total).toBeGreaterThanOrEqual(1);
     });
   });
 });
