@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { UnauthorizedException, InternalServerErrorException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
@@ -46,9 +46,9 @@ describe('AuthService', () => {
       ],
     }).compile();
 
-    authService = module.get(AuthService);
-    adminService = module.get(AdminService);
-    jwtService = module.get(JwtService);
+    authService = module.get<AuthService>(AuthService);
+    adminService = module.get<AdminService>(AdminService);
+    jwtService = module.get<JwtService>(JwtService);
   });
 
   afterEach(() => {
@@ -61,16 +61,15 @@ describe('AuthService', () => {
       password: 'password123',
     };
 
-    it('should return access_token and refresh_token', async () => {
+    it('should return access_token and refresh_token on success', async () => {
       const mockUser = {
         email: dto.email,
         password: 'hashed-password',
       };
 
       mockAdminService.findByEmail.mockResolvedValue(mockUser);
-
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-
+      
       mockJwtService.signAsync
         .mockResolvedValueOnce('access-token')
         .mockResolvedValueOnce('refresh-token');
@@ -89,26 +88,39 @@ describe('AuthService', () => {
       expect(jwtService.signAsync).toHaveBeenCalledTimes(2);
     });
 
-    it('should throw UnauthorizedException if user not found', async () => {
+    it('should throw UnauthorizedException with generic message if user not found', async () => {
       mockAdminService.findByEmail.mockResolvedValue(null);
 
-      await expect(authService.signIn(dto)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      try {
+        await authService.signIn(dto);
+      } catch (error) {
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect(error.message).toBe('Invalid email or password');
+      }
     });
 
-    it('should throw UnauthorizedException if password is invalid', async () => {
+    it('should throw UnauthorizedException with generic message if password is invalid', async () => {
       const mockUser = {
         email: dto.email,
         password: 'hashed-password',
       };
 
       mockAdminService.findByEmail.mockResolvedValue(mockUser);
-
       (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
+      try {
+        await authService.signIn(dto);
+      } catch (error) {
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect(error.message).toBe('Invalid email or password');
+      }
+    });
+
+    it('should throw InternalServerErrorException when an unexpected error occurs', async () => {
+      mockAdminService.findByEmail.mockRejectedValue(new Error('DB connection failed'));
+
       await expect(authService.signIn(dto)).rejects.toThrow(
-        UnauthorizedException,
+        InternalServerErrorException,
       );
     });
   });
