@@ -1,243 +1,242 @@
-import { BadRequestException, Injectable } from '@nestjs/common'
-import { InjectRepository } from '@nestjs/typeorm'
-import { Cuti } from './cuti.entity'
-import { Repository } from 'typeorm'
-import { Pegawai } from '../pegawai/pegawai.entity'
-import { CreateCutiDto, UpdateCutiDto } from './dto/cuti.dto'
-import dayjs from 'dayjs'
+import { 
+    BadRequestException, 
+    Injectable, 
+    InternalServerErrorException, 
+    Logger, 
+    NotFoundException 
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Cuti } from './cuti.entity';
+import { Repository, EntityManager } from 'typeorm';
+import { Pegawai } from '../pegawai/pegawai.entity';
+import { CreateCutiDto, UpdateCutiDto } from './dto/cuti.dto';
+import dayjs from 'dayjs';
 
 @Injectable()
 export class CutiService {
+    private readonly logger = new Logger(CutiService.name);
+
     constructor(
         @InjectRepository(Cuti)
         private readonly cutiRepository: Repository<Cuti>,
         @InjectRepository(Pegawai)
-        private readonly pegawaiRepository: Repository<Pegawai>
+        private readonly pegawaiRepository: Repository<Pegawai>,
+        private readonly entityManager: EntityManager,
     ) {}
 
-    async applyCuti(createCutiDto: CreateCutiDto){
-        const pegawai = await this.pegawaiRepository.findOne({ where: { email: createCutiDto.pegawaiEmail } })
-        if (!pegawai) throw new BadRequestException('Pegawai not found')
+    async applyCuti(createCutiDto: CreateCutiDto) {
+        return await this.entityManager.transaction(async (manager) => {
+            try {
+                const cutiRepo = manager.getRepository(Cuti);
+                const pegawaiRepo = manager.getRepository(Pegawai);
 
-        const startDate = dayjs(createCutiDto.tanggal_mulai)
-        const endDate = dayjs(createCutiDto.tanggal_selesai)
+                const pegawai = await pegawaiRepo.findOne({ where: { email: createCutiDto.pegawaiEmail } });
+                if (!pegawai) throw new NotFoundException('Pegawai not found');
 
-        if(endDate.isBefore(startDate)) throw new BadRequestException('End date cannot be before start date')
+                const startDate = dayjs(createCutiDto.tanggal_mulai).startOf('day');
+                const endDate = dayjs(createCutiDto.tanggal_selesai).startOf('day');
 
-        const daysRequested = endDate.diff(startDate, 'days') + 1
-        const startOfYear = dayjs().startOf('year').toDate()
-        const endOfYear = dayjs().endOf('year').toDate()
+                await this.validateCutiRules(cutiRepo, createCutiDto.pegawaiEmail, startDate, endDate);
 
-        const totalCutiThisYear = await this.cutiRepository
-            .createQueryBuilder('cuti')
-            .innerJoin('cuti.pegawai', 'pegawai')
-            .where('pegawai.email = :email', { email: createCutiDto.pegawaiEmail })
-            .andWhere('cuti.tanggal_mulai BETWEEN :startOfYear AND :endOfYear', { startOfYear, endOfYear })
-            .getMany()
+                const cuti = cutiRepo.create({
+                    pegawai: pegawai,
+                    tanggal_mulai: startDate.toDate(),
+                    tanggal_selesai: endDate.toDate(),
+                    alasan: createCutiDto.alasan,
+                });
 
-        const totalDaysThisYear = totalCutiThisYear.reduce((acc, c) => {
-        const s = dayjs(c.tanggal_mulai)
-        const e = dayjs(c.tanggal_selesai)
-        return acc + e.diff(s, 'days') + 1
-        }, 0)
-
-        if (totalDaysThisYear + daysRequested > 12){
-            throw new BadRequestException('Pegawai exceeded yearly leave limit of 12 days')
-        }
-
-        const requestedMonth = startDate.month() // 0 = Jan
-        const cutiInMonth = await this.cutiRepository
-            .createQueryBuilder('cuti')
-            .innerJoin('cuti.pegawai', 'pegawai')
-            .where('pegawai.email = :email', { email: createCutiDto.pegawaiEmail })
-            .andWhere('MONTH(cuti.tanggal_mulai) = :month', { month: requestedMonth + 1 })
-            .getCount()
-
-        if (cutiInMonth > 0) throw new BadRequestException('Pegawai can only take 1 day leave per month')
-        const cuti = this.cutiRepository.create({
-            pegawai: pegawai,
-            tanggal_mulai: startDate.toDate(),
-            tanggal_selesai: endDate.toDate(),
-            alasan: createCutiDto.alasan,
-        })
-
-        await this.cutiRepository.save(cuti)
-    }
-
-    async findByPegawai(pegawaiEmail: string){
-        const pegawai = await this.pegawaiRepository.findOne({ where: { email: pegawaiEmail } })
-        if(!pegawai) throw new BadRequestException('Pegawai not found')
-
-        const cutiList = await this.cutiRepository.createQueryBuilder('cuti')
-            .leftJoinAndSelect('cuti.pegawai', 'pegawai')
-            .where('pegawai.email = :email', { email: pegawaiEmail })
-            .orderBy('cuti.tanggal_mulai', 'DESC')
-            .getMany();
-
-        if(!cutiList || cutiList.length === 0) {
-            return {
-                status: 'success',
-                message: 'No leave data found for this pegawai',
-                data: [],
-            };
-        }
-
-        return {
-            status: 'success',
-            data: cutiList,
-        };
-    }
-
-    async findAll(page: number = 1 , limit: number = 10) {
-        const q = this.cutiRepository
-            .createQueryBuilder('cuti')
-            .leftJoinAndSelect('cuti.pegawai', 'pegawai')
-            .orderBy('cuti.tanggal_mulai', 'DESC')
-            .skip((page - 1) * limit)
-            .take(limit);
-        
-        const [data, total] = await q.getManyAndCount();
-
-        return { data, total, page, limit};
+                return await cutiRepo.save(cuti);
+            } catch (error) {
+                if (error instanceof NotFoundException || error instanceof BadRequestException) throw error;
+                this.logger.error(`Apply Cuti Unexpected Error: ${error.message}`, error.stack);
+                throw new InternalServerErrorException('System failure on applying leave');
+            }
+        });
     }
 
     async updateCuti(id: number, updateCutiDto: UpdateCutiDto) {
-        const cuti = await this.cutiRepository.findOne({
-            where: { id },
-            relations: ['pegawai'],
-        })
+        return await this.entityManager.transaction(async (manager) => {
+            try {
+                const cutiRepo = manager.getRepository(Cuti);
+                
+                const cuti = await cutiRepo.findOne({
+                    where: { id },
+                    relations: ['pegawai'],
+                });
 
-        if (!cuti) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'Cuti not found',
-            })
+                if (!cuti) throw new NotFoundException('Leave record not found');
+
+                const today = dayjs().startOf('day');
+                const leaveStart = dayjs(cuti.tanggal_mulai);
+                const leaveEnd = dayjs(cuti.tanggal_selesai);
+
+                if (today.isAfter(leaveStart.subtract(1, 'day')) && today.isBefore(leaveEnd.add(1, 'day'))) {
+                    throw new BadRequestException('Ongoing leave records cannot be updated');
+                }
+
+                const startDate = updateCutiDto.tanggal_mulai ? dayjs(updateCutiDto.tanggal_mulai) : dayjs(cuti.tanggal_mulai);
+                const endDate = updateCutiDto.tanggal_selesai ? dayjs(updateCutiDto.tanggal_selesai) : dayjs(cuti.tanggal_selesai);
+
+                await this.validateCutiRules(cutiRepo, cuti.pegawai.email, startDate, endDate, id);
+
+                cuti.tanggal_mulai = startDate.toDate();
+                cuti.tanggal_selesai = endDate.toDate();
+                if (updateCutiDto.alasan) cuti.alasan = updateCutiDto.alasan;
+
+                return await cutiRepo.save(cuti);
+            } catch (error) {
+                if (error instanceof NotFoundException || error instanceof BadRequestException) throw error;
+                this.logger.error(`Update Cuti Unexpected Error: ${error.message}`, error.stack);
+                throw new InternalServerErrorException('System failure on updating leave');
+            }
+        });
+    }
+
+    async findByPegawai(pegawaiEmail: string) {
+        try {
+            const pegawai = await this.pegawaiRepository.findOne({ where: { email: pegawaiEmail } });
+            if (!pegawai) throw new NotFoundException('Pegawai not found');
+
+            const cutiList = await this.cutiRepository.find({
+                where: { pegawai: { email: pegawaiEmail } },
+                relations: ['pegawai'],
+                order: { tanggal_mulai: 'DESC' }
+            });
+
+            if (!cutiList || cutiList.length === 0) {
+                return {
+                    status: 'success',
+                    message: 'No leave records found for this employee',
+                    data: [],
+                };
+            }
+
+            return { status: 'success', data: cutiList };
+        } catch (error) {
+            if (error instanceof NotFoundException) throw error;
+            this.logger.error(`Find By Pegawai Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch employee leave records');
         }
+    }
 
-        const today = dayjs()
-
-        if (
-            today.isAfter(dayjs(cuti.tanggal_mulai)) &&
-            today.isBefore(dayjs(cuti.tanggal_selesai).add(1, 'day'))
-        ) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'Cuti cannot be updated while it is ongoing',
-            })
-        }
-
-        const startDate = updateCutiDto.tanggal_mulai
-            ? dayjs(updateCutiDto.tanggal_mulai)
-            : dayjs(cuti.tanggal_mulai)
-
-        const endDate = updateCutiDto.tanggal_selesai
-            ? dayjs(updateCutiDto.tanggal_selesai)
-            : dayjs(cuti.tanggal_selesai)
-
-        if (endDate.isBefore(startDate)) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'End date cannot be before start date',
-            })
-        }
-
-        const daysRequested = endDate.diff(startDate, 'days') + 1
-        const pegawaiEmail = cuti.pegawai.email
-
-        // =======================
-        // VALIDASI 12 HARI / TAHUN
-        // =======================
-        const startOfYear = dayjs().startOf('year').toDate()
-        const endOfYear = dayjs().endOf('year').toDate()
-
-        const cutiThisYear = await this.cutiRepository
-            .createQueryBuilder('cuti')
-            .innerJoin('cuti.pegawai', 'pegawai')
-            .where('pegawai.email = :email', { email: pegawaiEmail })
-            .andWhere('cuti.id != :id', { id })
-            .andWhere('cuti.tanggal_mulai BETWEEN :start AND :end', {
-                start: startOfYear,
-                end: endOfYear,
-            })
-            .getMany()
-
-        const totalDaysThisYear = cutiThisYear.reduce((acc, c) => {
-            return acc + dayjs(c.tanggal_selesai).diff(dayjs(c.tanggal_mulai), 'days') + 1
-        }, 0)
-
-        if (totalDaysThisYear + daysRequested > 12) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'Pegawai exceeded yearly leave limit of 12 days',
-            })
-        }
-
-        // =========================
-        // VALIDASI 1 CUTI / BULAN
-        // =========================
-        const requestedMonth = startDate.month() + 1
-
-        const cutiInMonth = await this.cutiRepository
-            .createQueryBuilder('cuti')
-            .innerJoin('cuti.pegawai', 'pegawai')
-            .where('pegawai.email = :email', { email: pegawaiEmail })
-            .andWhere('cuti.id != :id', { id })
-            .andWhere('MONTH(cuti.tanggal_mulai) = :month', { month: requestedMonth })
-            .getCount()
-
-        if (cutiInMonth > 0) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'Pegawai can only take 1 leave per month',
-            })
-        }
-
-        // ===================
-        // UPDATE DATA
-        // ===================
-        cuti.tanggal_mulai = startDate.toDate()
-        cuti.tanggal_selesai = endDate.toDate()
-        if (updateCutiDto.alasan) cuti.alasan = updateCutiDto.alasan
-
-        await this.cutiRepository.save(cuti)
-
-        return {
-            status: 'success',
-            message: 'Cuti updated successfully',
-            data: cuti,
+    async findAll(page: number = 1, limit: number = 10) {
+        try {
+            const [data, total] = await this.cutiRepository.findAndCount({
+                relations: ['pegawai'],
+                order: { tanggal_mulai: 'DESC' },
+                skip: (page - 1) * limit,
+                take: limit,
+            });
+            return { 
+                status: 'success',
+                data, 
+                total, 
+                page, 
+                limit 
+            };
+        } catch (error) {
+            this.logger.error(`Find All Cuti Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch leave list');
         }
     }
 
     async deleteCuti(id: number) {
-        const cuti = await this.cutiRepository.findOne({
-            where: { id },
-            relations: ['pegawai'],
-        })
+        return await this.entityManager.transaction(async (manager) => {
+            try {
+                const cutiRepo = manager.getRepository(Cuti);
+                const cuti = await cutiRepo.findOne({ where: { id } });
+                
+                if (!cuti) throw new NotFoundException('Leave record not found');
 
-        if (!cuti) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'Cuti not found',
-            })
+                const today = dayjs().startOf('day');
+                if (today.isAfter(dayjs(cuti.tanggal_mulai).subtract(1, 'day')) && today.isBefore(dayjs(cuti.tanggal_selesai).add(1, 'day'))) {
+                    throw new BadRequestException('Ongoing leave records cannot be deleted');
+                }
+
+                await cutiRepo.remove(cuti);
+                return { 
+                    status: 'success', 
+                    message: 'Leave record deleted successfully' 
+                };
+            } catch (error) {
+                if (error instanceof NotFoundException || error instanceof BadRequestException) {
+                    throw error;
+                }
+                this.logger.error(`Delete Cuti Error: ${error.message}`, error.stack);
+                throw new InternalServerErrorException('Failed to delete leave record');
+            }
+        });
+    }
+    
+    private async validateCutiRules(
+        repo: Repository<Cuti>,
+        email: string,
+        startDate: dayjs.Dayjs,
+        endDate: dayjs.Dayjs,
+        excludeId?: number
+    ) {
+        if (endDate.isBefore(startDate)) {
+            throw new BadRequestException('End date cannot be earlier than start date');
         }
 
-        const today = dayjs()
-
-        if (
-            today.isAfter(dayjs(cuti.tanggal_mulai)) &&
-            today.isBefore(dayjs(cuti.tanggal_selesai).add(1, 'day'))
-        ) {
-            throw new BadRequestException({
-                statusCode: 400,
-                message: 'Cuti cannot be deleted while it is ongoing',
-            })
+        const daysRequested = endDate.diff(startDate, 'days') + 1;
+        if (daysRequested > 1) {
+            throw new BadRequestException('You are only allowed to take a maximum of 1 day leave per month');
         }
 
-        await this.cutiRepository.remove(cuti)
+        const overlap = await repo.createQueryBuilder('cuti')
+            .innerJoin('cuti.pegawai', 'pegawai')
+            .where('pegawai.email = :email', { email })
+            .andWhere('(:start <= cuti.tanggal_selesai AND :end >= cuti.tanggal_mulai)', {
+                start: startDate.toDate(),
+                end: endDate.toDate()
+            })
+            .andWhere(excludeId ? 'cuti.id != :id' : '1=1', { id: excludeId })
+            .getOne();
 
-        return {
-            status: 'success',
-            message: 'Cuti deleted successfully',
+        if (overlap) {
+            throw new BadRequestException('The employee already has a leave scheduled on the selected date');
+        }
+
+        const startOfMonth = startDate.startOf('month').toDate();
+        const endOfMonth = startDate.endOf('month').toDate();
+
+        const cutiInMonth = await repo.createQueryBuilder('cuti')
+            .innerJoin('cuti.pegawai', 'pegawai')
+            .where('pegawai.email = :email', { email })
+            .andWhere('cuti.tanggal_mulai BETWEEN :start AND :end', { 
+                start: startOfMonth, 
+                end: endOfMonth 
+            })
+            .andWhere(excludeId ? 'cuti.id != :id' : '1=1', { id: excludeId })
+            .getMany();
+
+        const totalDaysTakenThisMonth = cutiInMonth.reduce((acc, c) => {
+            return acc + dayjs(c.tanggal_selesai).diff(dayjs(c.tanggal_mulai), 'days') + 1;
+        }, 0);
+
+        if (totalDaysTakenThisMonth + daysRequested > 1) {
+            throw new BadRequestException(
+                `Monthly leave limit reached. You have already taken ${totalDaysTakenThisMonth} day(s) of leave this month.`
+            );
+        }
+
+        const startOfYear = startDate.startOf('year').toDate();
+        const endOfYear = startDate.endOf('year').toDate();
+
+        const cutiThisYear = await repo.createQueryBuilder('cuti')
+            .innerJoin('cuti.pegawai', 'pegawai')
+            .where('pegawai.email = :email', { email })
+            .andWhere('cuti.tanggal_mulai BETWEEN :start AND :end', { start: startOfYear, end: endOfYear })
+            .andWhere(excludeId ? 'cuti.id != :id' : '1=1', { id: excludeId })
+            .getMany();
+
+        const totalDaysThisYear = cutiThisYear.reduce((acc, c) => {
+            return acc + dayjs(c.tanggal_selesai).diff(dayjs(c.tanggal_mulai), 'days') + 1;
+        }, 0);
+
+        if (totalDaysThisYear + daysRequested > 12) {
+            throw new BadRequestException('Yearly leave limit (12 days) has been exceeded');
         }
     }
 }

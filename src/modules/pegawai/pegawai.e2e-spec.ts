@@ -13,8 +13,13 @@ import { Cuti } from '../cuti/cuti.entity';
 describe('Pegawai (E2E Test)', () => {
   let app: INestApplication;
   let pegawaiRepo: Repository<Pegawai>;
+  const api = () => request(app!.getHttpServer());
 
   beforeAll(async () => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'info').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({ isGlobal: true }),
@@ -31,6 +36,7 @@ describe('Pegawai (E2E Test)', () => {
             entities: [Pegawai, Cuti],
             synchronize: true,
             dropSchema: true,
+            logging: false,
           }),
         }),
         PegawaiModule,
@@ -38,12 +44,27 @@ describe('Pegawai (E2E Test)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+    
+    app.useGlobalPipes(new ValidationPipe({ 
+      whitelist: true, 
+      forbidNonWhitelisted: true, 
+      transform: true 
+    }));
     await app.init();
 
     pegawaiRepo = moduleFixture.get<Repository<Pegawai>>(getRepositoryToken(Pegawai));
+  });
 
-    // optional: seed initial pegawai data
+  afterAll(async () => {
+    await app.close();
+    jest.restoreAllMocks();
+  });
+
+  beforeEach(async () => {
+    await pegawaiRepo.query('SET FOREIGN_KEY_CHECKS = 0');
+    await pegawaiRepo.clear();
+    await pegawaiRepo.query('SET FOREIGN_KEY_CHECKS = 1');
+
     await pegawaiRepo.save([
       {
         nama_depan: 'John',
@@ -64,21 +85,20 @@ describe('Pegawai (E2E Test)', () => {
     ]);
   });
 
-  afterAll(async () => {
-    await app.close();
+  describe('GET /pegawai', () => {
+    it('should get all pegawai with pagination', async () => {
+      const response = await api()
+        .get('/pegawai')
+        .query({ page: 1, limit: 10 })
+        .expect(200);
+
+      expect(response.body).toHaveProperty('data');
+      expect(response.body).toHaveProperty('total');
+      expect(response.body.data.length).toBe(2);
+    });
   });
 
-  it('/pegawai (GET) - get all pegawai', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/pegawai')
-      .query({ page: 1, limit: 10 })
-      .expect(200);
-
-    expect(Array.isArray(response.body.data || response.body)).toBe(true);
-    expect(response.body.data.length || response.body.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('/pegawai (POST) - create pegawai', async () => {
+  describe('POST /pegawai', () => {
     const newPegawai: CreatePegawaiDto = {
       nama_depan: 'Alice',
       nama_belakang: 'Smith',
@@ -88,30 +108,76 @@ describe('Pegawai (E2E Test)', () => {
       jenis_kelamin: JenisKelamin.WANITA,
     };
 
-    const response = await request(app.getHttpServer())
-      .post('/pegawai')
-      .send(newPegawai)
-      .expect(201);
+    it('should create pegawai successfully', async () => {
+      const response = await api()
+        .post('/pegawai')
+        .send(newPegawai)
+        .expect(201);
 
-    expect(response.body.data).toHaveProperty('email', newPegawai.email);
-    expect(response.body.data).toHaveProperty('nama_depan', newPegawai.nama_depan);
-    expect(response.body.data).toHaveProperty('jenis_kelamin', newPegawai.jenis_kelamin);
+      expect(response.body.data).toHaveProperty('email', newPegawai.email);
+      expect(response.body.msg).toBe('Pegawai created successfully');
+    });
+
+    it('should return 409 if email already registered', async () => {
+      const duplicatePegawai = { ...newPegawai, email: 'john.doe@test.com' };
+
+      const response = await api()
+        .post('/pegawai')
+        .send(duplicatePegawai)
+        .expect(409);
+
+      expect(response.body.message).toContain('already created with this Email');
+    });
+
+    it('should return 400 for invalid email format', async () => {
+      const invalidData = { ...newPegawai, email: 'not-an-email' };
+
+      await api()
+        .post('/pegawai')
+        .send(invalidData)
+        .expect(400);
+    });
   });
 
-  it('/pegawai/:email (PUT) - update pegawai', async () => {
-    const response = await request(app.getHttpServer())
-      .put('/pegawai/john.doe@test.com')
-      .send({ nama_depan: 'John Updated' })
-      .expect(200);
+  describe('PUT /pegawai/:email', () => {
+    it('should update pegawai data successfully', async () => {
+      const email = 'john.doe@test.com';
+      const updateData = { nama_depan: 'John Updated' };
 
-    expect(response.body.data).toHaveProperty('nama_depan', 'John Updated');
+      const response = await api()
+        .put(`/pegawai/${email}`)
+        .send(updateData)
+        .expect(200);
+
+      expect(response.body.data.nama_depan).toBe('John Updated');
+      expect(response.body.msg).toBe('Pegawai updated successfully');
+    });
+
+    it('should return 404 if email not found', async () => {
+      await api()
+        .put('/pegawai/notfound@test.com')
+        .send({ nama_depan: 'Ghost' })
+        .expect(404);
+    });
   });
 
-  it('/pegawai/:email (DELETE) - remove pegawai', async () => {
-    const response = await request(app.getHttpServer())
-      .delete('/pegawai/jane.doe@test.com')
-      .expect(200);
+  describe('DELETE /pegawai/:email', () => {
+    it('should delete pegawai successfully', async () => {
+      const email = 'john.doe@test.com';
 
-    expect(response.body).toHaveProperty('msg', 'Data pegawai deleted successfully');
+      const response = await api()
+        .delete(`/pegawai/${email}`)
+        .expect(200);
+
+      expect(response.body.msg).toBe('Data pegawai deleted successfully');
+      const check = await pegawaiRepo.findOne({ where: { email } });
+      expect(check).toBeNull();
+    });
+
+    it('should return 404 if data to delete is not found', async () => {
+      await api()
+        .delete('/pegawai/notfound@test.com')
+        .expect(404);
+    });
   });
 });

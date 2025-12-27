@@ -1,34 +1,53 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { 
+    Injectable, 
+    UnauthorizedException, 
+    Logger, 
+    InternalServerErrorException 
+} from '@nestjs/common';
 import { AdminService } from '../admin/admin.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { SignInDto } from './dto/signin.dto';
-import * as bcrypt from 'bcrypt'
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class AuthService {
-    constructor(private adminService: AdminService, private jwtService: JwtService, private configService: ConfigService) {}
+    private readonly logger = new Logger(AuthService.name);
 
-    async signIn(signInDto: SignInDto): Promise<{access_token: string, refresh_token: string}> {
-        const user = await this.adminService.findByEmail(signInDto.email)
-        if(!user)
-            throw new UnauthorizedException('Unauthorized' , {
-               cause: new Error(),
-               description: 'User related not found or registered yet!' 
-            })
+    constructor(
+        private readonly adminService: AdminService, 
+        private readonly jwtService: JwtService, 
+        private readonly configService: ConfigService
+    ) {}
 
-        const password = await bcrypt.compare(signInDto.password, user.password)
-        const payload = {email: user.email, sub: user.email}
+    async signIn(signInDto: SignInDto): Promise<{ access_token: string, refresh_token: string }> {
+        try {
+            const user = await this.adminService.findByEmail(signInDto.email);
+            
+            if (!user) {
+                throw new UnauthorizedException('Invalid email or password');
+            }
 
-        if(!password){
-            throw new UnauthorizedException('Unauthorized', {
-                cause: new Error(),
-                description: 'Password not matched!'
-            })
-        }
-        return {
-            access_token: await this.jwtService.signAsync(payload),
-            refresh_token: await this.jwtService.signAsync(payload, { secret: this.configService.get<string>('refresh_secret'), expiresIn: '1d' })
+            const isPasswordMatching = await bcrypt.compare(signInDto.password, user.password);
+            if (!isPasswordMatching) {
+                throw new UnauthorizedException('Invalid email or password');
+            }
+
+            const payload = { email: user.email, sub: user.email };
+            const [access_token, refresh_token] = await Promise.all([
+                this.jwtService.signAsync(payload),
+                this.jwtService.signAsync(payload, { 
+                    secret: this.configService.get<string>('refresh_secret'), 
+                    expiresIn: '1d' 
+                })
+            ]);
+
+            return { access_token, refresh_token };
+
+        } catch (error) {
+            if (error instanceof UnauthorizedException) throw error;
+            this.logger.error(`Sign-in unexpected error for email ${signInDto.email}: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('An error occurred during the authentication process');
         }
     }
 }
