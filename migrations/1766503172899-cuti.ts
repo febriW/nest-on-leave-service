@@ -35,9 +35,16 @@ export class Cuti1766503172899 implements MigrationInterface {
         await queryRunner.query(`
             INSERT INTO cuti (alasan, tanggal_mulai, tanggal_selesai, pegawaiEmail)
             VALUES
-            ('Sakit', '2025-12-01', '2025-12-03', 'budi@gmail.com'),
-            ('Liburan', '2025-12-05', '2025-12-10', 'siti@gmail.com'),
-            ('Keperluan Keluarga', '2025-12-15', '2025-12-16', 'andi@gmail.com')
+            ('Sakit', '2025-01-10', '2025-01-10', 'budi@gmail.com'),
+            ('Keperluan Keluarga', '2025-02-15', '2025-02-15', 'budi@gmail.com'),
+            ('Sakit', '2025-02-08', '2025-02-08', 'siti@gmail.com'),
+            ('Keperluan Keluarga', '2025-04-15', '2025-04-15', 'siti@gmail.com'),
+            ('Sakit', '2025-05-20', '2025-05-20', 'siti@gmail.com'),
+            ('Sakit', '2025-08-22', '2025-08-22', 'siti@gmail.com'),
+            ('Liburan', '2025-01-02', '2025-01-02', 'andi@gmail.com'),
+            ('Sakit', '2025-02-03', '2025-02-03', 'andi@gmail.com'),
+            ('Keperluan Keluarga', '2025-03-06', '2025-03-06', 'andi@gmail.com'),
+            ('Liburan', '2025-04-08', '2025-04-08', 'andi@gmail.com')
         `);
     }
 
