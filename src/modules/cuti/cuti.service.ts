@@ -1,7 +1,13 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { 
+    BadRequestException, 
+    Injectable, 
+    InternalServerErrorException, 
+    Logger, 
+    NotFoundException 
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cuti } from './cuti.entity';
-import { Repository, DataSource, Between } from 'typeorm';
+import { Repository, EntityManager } from 'typeorm';
 import { Pegawai } from '../pegawai/pegawai.entity';
 import { CreateCutiDto, UpdateCutiDto } from './dto/cuti.dto';
 import dayjs from 'dayjs';
@@ -15,11 +21,11 @@ export class CutiService {
         private readonly cutiRepository: Repository<Cuti>,
         @InjectRepository(Pegawai)
         private readonly pegawaiRepository: Repository<Pegawai>,
-        private readonly dataSource: DataSource
+        private readonly entityManager: EntityManager,
     ) {}
 
     async applyCuti(createCutiDto: CreateCutiDto) {
-        return await this.dataSource.transaction(async (manager) => {
+        return await this.entityManager.transaction(async (manager) => {
             try {
                 const cutiRepo = manager.getRepository(Cuti);
                 const pegawaiRepo = manager.getRepository(Pegawai);
@@ -49,9 +55,10 @@ export class CutiService {
     }
 
     async updateCuti(id: number, updateCutiDto: UpdateCutiDto) {
-        return await this.dataSource.transaction(async (manager) => {
+        return await this.entityManager.transaction(async (manager) => {
             try {
                 const cutiRepo = manager.getRepository(Cuti);
+                
                 const cuti = await cutiRepo.findOne({
                     where: { id },
                     relations: ['pegawai'],
@@ -85,6 +92,82 @@ export class CutiService {
         });
     }
 
+    async findByPegawai(pegawaiEmail: string) {
+        try {
+            const pegawai = await this.pegawaiRepository.findOne({ where: { email: pegawaiEmail } });
+            if (!pegawai) throw new NotFoundException('Pegawai not found');
+
+            const cutiList = await this.cutiRepository.find({
+                where: { pegawai: { email: pegawaiEmail } },
+                relations: ['pegawai'],
+                order: { tanggal_mulai: 'DESC' }
+            });
+
+            if (!cutiList || cutiList.length === 0) {
+                return {
+                    status: 'success',
+                    message: 'No leave records found for this employee',
+                    data: [],
+                };
+            }
+
+            return { status: 'success', data: cutiList };
+        } catch (error) {
+            if (error instanceof NotFoundException) throw error;
+            this.logger.error(`Find By Pegawai Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch employee leave records');
+        }
+    }
+
+    async findAll(page: number = 1, limit: number = 10) {
+        try {
+            const [data, total] = await this.cutiRepository.findAndCount({
+                relations: ['pegawai'],
+                order: { tanggal_mulai: 'DESC' },
+                skip: (page - 1) * limit,
+                take: limit,
+            });
+            return { 
+                status: 'success',
+                data, 
+                total, 
+                page, 
+                limit 
+            };
+        } catch (error) {
+            this.logger.error(`Find All Cuti Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch leave list');
+        }
+    }
+
+    async deleteCuti(id: number) {
+        return await this.entityManager.transaction(async (manager) => {
+            try {
+                const cutiRepo = manager.getRepository(Cuti);
+                const cuti = await cutiRepo.findOne({ where: { id } });
+                
+                if (!cuti) throw new NotFoundException('Leave record not found');
+
+                const today = dayjs().startOf('day');
+                if (today.isAfter(dayjs(cuti.tanggal_mulai).subtract(1, 'day')) && today.isBefore(dayjs(cuti.tanggal_selesai).add(1, 'day'))) {
+                    throw new BadRequestException('Ongoing leave records cannot be deleted');
+                }
+
+                await cutiRepo.remove(cuti);
+                return { 
+                    status: 'success', 
+                    message: 'Leave record deleted successfully' 
+                };
+            } catch (error) {
+                if (error instanceof NotFoundException || error instanceof BadRequestException) {
+                    throw error;
+                }
+                this.logger.error(`Delete Cuti Error: ${error.message}`, error.stack);
+                throw new InternalServerErrorException('Failed to delete leave record');
+            }
+        });
+    }
+    
     private async validateCutiRules(
         repo: Repository<Cuti>,
         email: string,
@@ -154,78 +237,6 @@ export class CutiService {
 
         if (totalDaysThisYear + daysRequested > 12) {
             throw new BadRequestException('Yearly leave limit (12 days) has been exceeded');
-        }
-    }
-
-    async findByPegawai(pegawaiEmail: string) {
-        try {
-            const pegawai = await this.pegawaiRepository.findOne({ where: { email: pegawaiEmail } });
-            if (!pegawai) throw new NotFoundException('Pegawai not found');
-
-            const cutiList = await this.cutiRepository.find({
-                where: { pegawai: { email: pegawaiEmail } },
-                relations: ['pegawai'],
-                order: { tanggal_mulai: 'DESC' }
-            });
-
-            if (!cutiList || cutiList.length === 0) {
-                return {
-                    status: 'success',
-                    message: 'No leave records found for this employee',
-                    data: [],
-                };
-            }
-
-            return { status: 'success', data: cutiList };
-        } catch (error) {
-            if (error instanceof NotFoundException) throw error;
-            this.logger.error(`Find By Pegawai Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException('Failed to fetch employee leave records');
-        }
-    }
-
-    async findAll(page: number = 1, limit: number = 10) {
-        try {
-            const [data, total] = await this.cutiRepository.findAndCount({
-                relations: ['pegawai'],
-                order: { tanggal_mulai: 'DESC' },
-                skip: (page - 1) * limit,
-                take: limit,
-            });
-            return { 
-                status: 'success',
-                data, 
-                total, 
-                page, 
-                limit 
-            };
-        } catch (error) {
-            this.logger.error(`Find All Cuti Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException('Failed to fetch leave list');
-        }
-    }
-
-    async deleteCuti(id: number) {
-        try {
-            const cuti = await this.cutiRepository.findOne({ where: { id } });
-            if (!cuti) throw new NotFoundException('Leave record not found');
-
-            const today = dayjs().startOf('day');
-            if (today.isAfter(dayjs(cuti.tanggal_mulai).subtract(1, 'day')) && today.isBefore(dayjs(cuti.tanggal_selesai).add(1, 'day'))) {
-                throw new BadRequestException('Ongoing leave records cannot be deleted');
-            }
-
-            await this.cutiRepository.remove(cuti);
-            return { 
-                status: 'success', 
-                message: 'Leave record deleted successfully' 
-            };
-        } catch (error) {
-            if (error instanceof NotFoundException || error instanceof BadRequestException) {
-                throw error;
-            }
-            this.logger.error(`Delete Cuti Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException('Failed to delete leave record');
         }
     }
 }

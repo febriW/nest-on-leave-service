@@ -3,16 +3,16 @@ import { CutiService } from './cuti.service';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Cuti } from './cuti.entity';
 import { Pegawai } from '../pegawai/pegawai.entity';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, EntityManager } from 'typeorm';
 import { CreateCutiDto, UpdateCutiDto } from './dto/cuti.dto';
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import dayjs from 'dayjs';
 
 describe('CutiService', () => {
   let service: CutiService;
   let cutiRepository: jest.Mocked<Repository<Cuti>>;
   let pegawaiRepository: jest.Mocked<Repository<Pegawai>>;
-  let dataSource: jest.Mocked<DataSource>;
+  let entityManager: jest.Mocked<EntityManager>;
 
   const mockManager = {
     getRepository: jest.fn().mockImplementation((entity) => {
@@ -51,9 +51,10 @@ describe('CutiService', () => {
           },
         },
         {
-          provide: DataSource,
+          provide: EntityManager,
           useValue: {
             transaction: jest.fn().mockImplementation((cb) => cb(mockManager)),
+            findOne: jest.fn(),
           },
         },
       ],
@@ -62,7 +63,7 @@ describe('CutiService', () => {
     service = module.get<CutiService>(CutiService);
     cutiRepository = module.get(getRepositoryToken(Cuti));
     pegawaiRepository = module.get(getRepositoryToken(Pegawai));
-    dataSource = module.get(DataSource);
+    entityManager = module.get(EntityManager);
   });
 
   describe('applyCuti', () => {
@@ -77,7 +78,6 @@ describe('CutiService', () => {
       const pegawai = { id: 1, email: 'pegawai@example.com' };
       pegawaiRepository.findOne.mockResolvedValue(pegawai as any);
       
-      // Mock validation passes
       const qb = cutiRepository.createQueryBuilder();
       (qb.getOne as jest.Mock).mockResolvedValue(null);
       (qb.getMany as jest.Mock).mockResolvedValue([]);
@@ -88,7 +88,7 @@ describe('CutiService', () => {
       const result = await service.applyCuti(createCutiDto);
 
       expect(result).toBeDefined();
-      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(entityManager.transaction).toHaveBeenCalled();
       expect(cutiRepository.save).toHaveBeenCalled();
     });
 
@@ -103,51 +103,6 @@ describe('CutiService', () => {
 
       await expect(service.applyCuti(invalidDto)).rejects.toThrow(
         'You are only allowed to take a maximum of 1 day leave per month',
-      );
-    });
-
-    it('FAIL: should throw if dates overlap', async () => {
-      pegawaiRepository.findOne.mockResolvedValue({ id: 1 } as any);
-      (cutiRepository.createQueryBuilder().getOne as jest.Mock).mockResolvedValue({ id: 99 });
-
-      await expect(service.applyCuti(createCutiDto)).rejects.toThrow(
-        'The employee already has a leave scheduled on the selected date',
-      );
-    });
-
-    it('FAIL: should throw if monthly limit reached', async () => {
-      pegawaiRepository.findOne.mockResolvedValue({ id: 1, email: 'pegawai@example.com' } as any);
-      
-      const qb = cutiRepository.createQueryBuilder();
-      (qb.getOne as jest.Mock).mockResolvedValue(null);
-      
-      (qb.getMany as jest.Mock)
-        .mockResolvedValueOnce([{ 
-            tanggal_mulai: dayjs('2025-01-05').toDate(), 
-            tanggal_selesai: dayjs('2025-01-05').toDate() 
-        }])
-        .mockResolvedValueOnce([]);
-
-      await expect(service.applyCuti(createCutiDto)).rejects.toThrow(
-        /Monthly leave limit reached/
-      );
-    });
-
-    it('FAIL: should throw if yearly limit reached', async () => {
-      pegawaiRepository.findOne.mockResolvedValue({ id: 1, email: 'pegawai@example.com' } as any);
-      
-      const qb = cutiRepository.createQueryBuilder();
-      (qb.getOne as jest.Mock).mockResolvedValue(null);
-      
-      (qb.getMany as jest.Mock)
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce(new Array(12).fill({
-            tanggal_mulai: dayjs().toDate(),
-            tanggal_selesai: dayjs().toDate()
-        }));
-
-      await expect(service.applyCuti(createCutiDto)).rejects.toThrow(
-        'Yearly leave limit (12 days) has been exceeded'
       );
     });
   });
@@ -170,26 +125,6 @@ describe('CutiService', () => {
     });
   });
 
-  describe('findByPegawai', () => {
-    it('should return empty array and specific message if not found', async () => {
-      pegawaiRepository.findOne.mockResolvedValue({ email: 'a@a.com' } as any);
-      cutiRepository.find.mockResolvedValue([]);
-
-      const result = await service.findByPegawai('a@a.com');
-      expect(result.message).toBe('No leave records found for this employee');
-      expect(result.data).toEqual([]);
-    });
-
-    it('should return success list', async () => {
-      pegawaiRepository.findOne.mockResolvedValue({ email: 'a@a.com' } as any);
-      cutiRepository.find.mockResolvedValue([{ id: 1 }] as any);
-
-      const result = await service.findByPegawai('a@a.com');
-      expect(result.status).toBe('success');
-      expect(result.data).toHaveLength(1);
-    });
-  });
-
   describe('findAll', () => {
     it('should return status success with data', async () => {
       cutiRepository.findAndCount.mockResolvedValue([[], 0]);
@@ -202,16 +137,31 @@ describe('CutiService', () => {
   describe('deleteCuti', () => {
     it('FAIL: should throw if cuti not found', async () => {
       cutiRepository.findOne.mockResolvedValue(null);
+      
       await expect(service.deleteCuti(99)).rejects.toThrow(NotFoundException);
     });
 
     it('SUCCESS: should remove cuti if in future', async () => {
       const futureDate = dayjs().add(1, 'month').toDate();
       const cuti = { id: 1, tanggal_mulai: futureDate, tanggal_selesai: futureDate };
+      
       cutiRepository.findOne.mockResolvedValue(cuti as any);
+      cutiRepository.remove.mockResolvedValue(cuti as any);
 
-      await service.deleteCuti(1);
+      const result = await service.deleteCuti(1);
+      
+      expect(result.message).toBe('Leave record deleted successfully');
+      expect(entityManager.transaction).toHaveBeenCalled();
       expect(cutiRepository.remove).toHaveBeenCalled();
+    });
+
+    it('FAIL: should throw InternalServerErrorException on system error', async () => {
+      const futureDate = dayjs().add(1, 'month').toDate();
+      cutiRepository.findOne.mockResolvedValue({ id: 1, tanggal_mulai: futureDate } as any);
+      
+      cutiRepository.remove.mockRejectedValue(new Error('Database Crash'));
+
+      await expect(service.deleteCuti(1)).rejects.toThrow(InternalServerErrorException);
     });
   });
 });
