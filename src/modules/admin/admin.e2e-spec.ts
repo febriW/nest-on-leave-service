@@ -12,6 +12,7 @@ import { CreateAdminDto, JenisKelamin } from './dto/admin.dto';
 describe('Admin (E2E Test)', () => {
   let app: INestApplication;
   let adminRepo: Repository<Admin>;
+  const api = () => request(app.getHttpServer());
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -37,82 +38,149 @@ describe('Admin (E2E Test)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+    app.useGlobalPipes(new ValidationPipe({ 
+      whitelist: true, 
+      forbidNonWhitelisted: true, 
+      transform: true 
+    }));
     await app.init();
 
     adminRepo = moduleFixture.get<Repository<Admin>>(getRepositoryToken(Admin));
-    await adminRepo.query('SET FOREIGN_KEY_CHECKS = 0');
-    await adminRepo.clear();
-    await adminRepo.query('SET FOREIGN_KEY_CHECKS = 1');
-
-    await adminRepo.save([
-      {
-        email: 'admin1@test.com',
-        password: 'password123',
-        nama_depan: 'Admin1',
-        nama_belakang: 'Test',
-        tanggal_lahir: new Date('1990-01-01'),
-        jenis_kelamin: JenisKelamin.PRIA,
-      },
-      {
-        email: 'admin2@test.com',
-        password: 'password123',
-        nama_depan: 'Admin2',
-        nama_belakang: 'Test',
-        tanggal_lahir: new Date('1992-02-02'),
-        jenis_kelamin: JenisKelamin.WANITA,
-      },
-    ]);
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  it('/admin (GET) - get all admins', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/admin')
-      .query({ page: 1, limit: 10 })
-      .expect(200);
-
-    expect(Array.isArray(response.body.data)).toBe(true);
-    expect(response.body.data.length).toBe(2);
+  beforeEach(async () => {
+    await adminRepo.query('SET FOREIGN_KEY_CHECKS = 0');
+    await adminRepo.clear();
+    await adminRepo.query('SET FOREIGN_KEY_CHECKS = 1');
   });
 
-  it('/admin (POST) - create admin', async () => {
-    const newAdmin: CreateAdminDto = {
-      email: 'admin3@test.com',
+  describe('POST /admin (Create)', () => {
+    const validAdmin: CreateAdminDto = {
+      email: 'admin@test.com',
       password: 'password123',
-      nama_depan: 'Admin3',
-      nama_belakang: 'Test',
-      tanggal_lahir: new Date('1995-03-03'),
+      nama_depan: 'John',
+      nama_belakang: 'Doe',
+      tanggal_lahir: new Date('1990-01-01'),
       jenis_kelamin: JenisKelamin.PRIA,
     };
 
-    const response = await request(app.getHttpServer())
-      .post('/admin')
-      .send(newAdmin)
-      .expect(201);
+    it('should create admin successfully and hash the password', async () => {
+      const res = await api()
+        .post('/admin')
+        .send(validAdmin)
+        .expect(201);
 
-    expect(response.body.data).toHaveProperty('email', newAdmin.email);
-    expect(response.body.data).toHaveProperty('nama_depan', newAdmin.nama_depan);
-    expect(response.body.data).toHaveProperty('jenis_kelamin', newAdmin.jenis_kelamin);
+      expect(res.body.msg).toBe('Admin created successfully');
+      expect(res.body.data.email).toBe(validAdmin.email);
+      expect(res.body.data).not.toHaveProperty('password');
+
+      const saved = await adminRepo.findOne({ where: { email: validAdmin.email } });
+      expect(saved?.password).not.toBe(validAdmin.password);
+    });
+
+    it('should return 409 Conflict if email already exists', async () => {
+      await adminRepo.save({ ...validAdmin, password: 'hashed' });
+
+      const res = await api()
+        .post('/admin')
+        .send(validAdmin)
+        .expect(409);
+
+      expect(res.body.message).toContain('already registered');
+    });
+
+    it('should return 400 Bad Request if validation fails (e.g. short password)', async () => {
+      const invalidAdmin = { ...validAdmin, password: '123' };
+
+      await api()
+        .post('/admin')
+        .send(invalidAdmin)
+        .expect(400);
+    });
   });
 
-  it('/admin/:email (PUT) - update admin', async () => {
-    const response = await request(app.getHttpServer())
-      .put('/admin/admin1@test.com')
-      .send({ nama_depan: 'UpdatedAdmin1' })
-      .expect(200);
+  describe('GET /admin (Read All)', () => {
+    it('should return paginated results and hide passwords', async () => {
+      await adminRepo.save([
+        { email: 'a1@test.com', password: 'h1', nama_depan: 'A', nama_belakang: '1', tanggal_lahir: new Date(), jenis_kelamin: JenisKelamin.PRIA },
+        { email: 'a2@test.com', password: 'h2', nama_depan: 'A', nama_belakang: '2', tanggal_lahir: new Date(), jenis_kelamin: JenisKelamin.WANITA }
+      ]);
 
-    expect(response.body.data).toHaveProperty('nama_depan', 'UpdatedAdmin1');
+      const res = await api()
+        .get('/admin')
+        .query({ page: 1, limit: 10 })
+        .expect(200);
+
+      expect(res.body.total).toBe(2);
+      expect(res.body.data.length).toBe(2);
+      expect(res.body.data[0]).not.toHaveProperty('password');
+    });
   });
 
-  it('/admin/:email (DELETE) - remove admin', async () => {
-    const response = await request(app.getHttpServer())
-      .delete('/admin/admin2@test.com')
-      .expect(200);
+  describe('PUT /admin/:email (Update)', () => {
+    const email = 'update@test.com';
 
-    expect(response.body).toHaveProperty('msg', 'Admin deleted successfully');
+    beforeEach(async () => {
+      await adminRepo.save({
+        email,
+        password: 'old_password_hash',
+        nama_depan: 'Old',
+        nama_belakang: 'Name',
+        tanggal_lahir: new Date(),
+        jenis_kelamin: JenisKelamin.PRIA
+      });
+    });
+
+    it('should update profile and hash new password if provided', async () => {
+      const updateData = { nama_depan: 'NewName', password: 'newSecurePassword' };
+
+      const res = await api()
+        .put(`/admin/${email}`)
+        .send(updateData)
+        .expect(200);
+
+      expect(res.body.data.nama_depan).toBe('NewName');
+      
+      const dbAdmin = await adminRepo.findOne({ where: { email } });
+      expect(dbAdmin?.password).not.toBe('newSecurePassword');
+    });
+
+    it('should return 404 if admin does not exist', async () => {
+      await api()
+        .put('/admin/wrong@test.com')
+        .send({ nama_depan: 'None' })
+        .expect(404);
+    });
+  });
+
+  describe('DELETE /admin/:email', () => {
+    it('should delete admin successfully', async () => {
+      const email = 'delete@test.com';
+      await adminRepo.save({
+        email,
+        password: 'hash',
+        nama_depan: 'Del',
+        nama_belakang: 'Me',
+        tanggal_lahir: new Date(),
+        jenis_kelamin: JenisKelamin.WANITA
+      });
+
+      await api()
+        .delete(`/admin/${email}`)
+        .expect(200);
+
+      const found = await adminRepo.findOne({ where: { email } });
+      expect(found).toBeNull();
+    });
+
+    it('should return 404 if admin to delete is not found', async () => {
+      await api()
+        .delete('/admin/nonexistent@test.com')
+        .expect(404);
+    });
   });
 });
