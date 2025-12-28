@@ -29,9 +29,16 @@ export class Pegawai1766503004444 implements MigrationInterface {
         await queryRunner.query(`
             INSERT INTO pegawai (nama_depan, nama_belakang, email, no_hp, alamat, jenis_kelamin)
             VALUES
-            ('Budi', 'Santoso', 'budi@gmail.com', '+6281234567890', 'Jl. Merdeka No.1', 'L'),
-            ('Siti', 'Aminah', 'siti@gmail.com', '+6281234567891', 'Jl. Sudirman No.2', 'P'),
-            ('Andi', 'Pratama', 'andi@gmail.com', '+6281234567892', 'Jl. Thamrin No.3', 'L')
+            ('Rina', 'Putri', 'rina@gmail.com', '+6281234567893', 'Jl. Gatot Subroto No.4', 'P'),
+            ('Agus', 'Haryanto', 'agus@gmail.com', '+6281234567894', 'Jl. Diponegoro No.5', 'L'),
+            ('Dewi', 'Lestari', 'dewi@gmail.com', '+6281234567895', 'Jl. Hayam Wuruk No.6', 'P'),
+            ('Fajar', 'Wijaya', 'fajar@gmail.com', '+6281234567896', 'Jl. Pemuda No.7', 'L'),
+            ('Hendra', 'Saputra', 'hendra@gmail.com', '+6281234567898', 'Jl. Sudirman No.9', 'L'),
+            ('Maya', 'Kusuma', 'maya@gmail.com', '+6281234567899', 'Jl. Merdeka No.10', 'P'),
+            ('Bayu', 'Saputra', 'bayu@gmail.com', '+6281234567802', 'Jl. Diponegoro No.13', 'L'),
+            ('Nina', 'Fauziah', 'nina@gmail.com', '+6281234567803', 'Jl. Hayam Wuruk No.14', 'P'),
+            ('Doni', 'Pratama', 'doni@gmail.com', '+6281234567804', 'Jl. Pemuda No.15', 'L'),
+            ('Lina', 'Prasetyo', 'lina@gmail.com', '+6281234567805', 'Jl. Merdeka No.16', 'P')
         `);
     }
 
